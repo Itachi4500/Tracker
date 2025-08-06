@@ -3,436 +3,609 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Attendance Tracker with QR Code</title>
+    <title>QR Attendance System</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.1/lucide.min.js"></script>
-    <!-- QR Code Generation Library -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
-    <!-- Markdown Parser for Gemini Response -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f3f4f6;
-        }
-        .status-badge, .btn-action, .modal-overlay {
-            transition: all 0.3s ease-in-out;
-        }
-        .btn-action:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        #report-content h2 {
-            font-size: 1.25rem;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-        }
-        #report-content ul {
-            list-style-type: disc;
-            padding-left: 1.5rem;
-            margin-bottom: 1rem;
-        }
+        #reader { width: 100%; max-width: 500px; margin: 0 auto; border: 2px dashed #d1d5db; border-radius: 8px; }
+        .qr-code { width: 100%; max-width: 200px; height: auto; }
+        .birthday-badge { animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        .dark-mode { background-color: #1a202c; color: #f7fafc; }
+        .dark-mode .card, .dark-mode .modal-content { background-color: #2d3748; }
+        .dark-mode .tab-btn { color: #9ca3af; }
+        .dark-mode .tab-btn.active { color: #818cf8; border-color: #818cf8; }
+        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 100; }
+        .toast { padding: 1rem 1.5rem; border-radius: 0.5rem; color: white; margin-bottom: 0.5rem; opacity: 0; transform: translateX(100%); transition: all 0.5s ease-in-out; }
+        .toast.show { opacity: 1; transform: translateX(0); }
+        .toast.success { background-color: #10b981; }
+        .toast.error { background-color: #ef4444; }
+        .toast.info { background-color: #3b82f6; }
     </style>
 </head>
-<body class="bg-gray-100 text-gray-800">
-
-    <!-- Firebase SDK -->
-    <script type="module">
-        // Firebase Imports
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, collection, query, getDocs, serverTimestamp, Timestamp, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // --- DOM ELEMENTS ---
-        const clockDisplay = document.getElementById('clock-display');
-        const dateDisplay = document.getElementById('date-display');
-        const statusBadge = document.getElementById('status-badge');
-        const statusText = document.getElementById('status-text');
-        const clockInBtn = document.getElementById('clock-in-btn');
-        const startBreakBtn = document.getElementById('start-break-btn');
-        const endBreakBtn = document.getElementById('end-break-btn');
-        const clockOutBtn = document.getElementById('clock-out-btn');
-        const summaryClockIn = document.getElementById('summary-clock-in');
-        const summaryTotalBreak = document.getElementById('summary-total-break');
-        const summaryTotalHours = document.getElementById('summary-total-hours');
-        const historyTableBody = document.getElementById('history-table-body');
-        const userIdDisplay = document.getElementById('user-id-display');
-        const loadingOverlay = document.getElementById('loading-overlay');
-        const qrModal = document.getElementById('qr-modal');
-        const qrCanvas = document.getElementById('qr-canvas');
-        const closeModalBtn = document.getElementById('close-modal-btn');
-        const qrMessage = document.getElementById('qr-message');
-        const generateReportBtn = document.getElementById('generate-report-btn');
-        const reportModal = document.getElementById('report-modal');
-        const closeReportModalBtn = document.getElementById('close-report-modal-btn');
-        const reportContent = document.getElementById('report-content');
-        const reportLoading = document.getElementById('report-loading');
-
-        // --- STATE VARIABLES ---
-        let db, auth;
-        let userId = null;
-        let isAuthReady = false;
-        let currentState = { status: 'clockedOut', clockInTime: null, clockOutTime: null, totalBreakDuration: 0, breaks: [] };
-        let todayDocId = new Date().toISOString().slice(0, 10);
-        let todayDocUnsubscribe = null;
-        let qrTimer = null;
-
-        // --- FIREBASE SETUP ---
-        async function setupFirebase() {
-            try {
-                const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "your-fallback-api-key", authDomain: "...", projectId: "..." };
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                await setPersistence(auth, inMemoryPersistence);
-
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        userIdDisplay.textContent = `User ID: ${userId}`;
-                        isAuthReady = true;
-                        loadingOverlay.classList.add('hidden');
-                        await initializeAppLogic();
-                    } else {
-                        isAuthReady = false;
-                        loadingOverlay.classList.remove('hidden');
-                        userIdDisplay.textContent = 'Not authenticated';
-                    }
-                });
-
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Firebase Initialization Error:", error);
-                loadingOverlay.textContent = 'Error loading application. Please refresh.';
-            }
-        }
+<body class="bg-gray-100 min-h-screen font-sans">
+    <div class="container mx-auto px-4 py-8">
+        <header class="flex justify-between items-center mb-8">
+            <div>
+                <h1 class="text-3xl font-bold text-indigo-600">Advanced QR Attendance</h1>
+                <p class="text-gray-600">Real-time scanning and reporting solution</p>
+            </div>
+            <button id="theme-toggle" class="p-2 rounded-full bg-gray-200 dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <svg id="theme-icon-light" class="w-6 h-6 text-gray-800" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                <svg id="theme-icon-dark" class="w-6 h-6 text-gray-100 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+            </button>
+        </header>
         
-        // --- APPLICATION LOGIC ---
-        async function initializeAppLogic() {
-            if (!isAuthReady || !userId) return;
-            if (todayDocUnsubscribe) todayDocUnsubscribe();
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const todayDocRef = doc(db, `artifacts/${appId}/users/${userId}/attendance`, todayDocId);
-
-            todayDocUnsubscribe = onSnapshot(todayDocRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    currentState = {
-                        status: data.status || 'clockedOut',
-                        clockInTime: data.clockInTime?.toDate ? data.clockInTime.toDate() : null,
-                        clockOutTime: data.clockOutTime?.toDate ? data.clockOutTime.toDate() : null,
-                        totalBreakDuration: data.totalBreakDuration || 0,
-                        breaks: (data.breaks || []).map(b => ({
-                            ...b,
-                            startTime: b.startTime?.toDate ? b.startTime : null,
-                            endTime: b.endTime?.toDate ? b.endTime : null
-                        })),
-                    };
-                } else {
-                    resetDailyState();
-                }
-                updateUI();
-            });
-            await renderHistory();
-        }
-
-        function resetDailyState() {
-            currentState = { status: 'clockedOut', clockInTime: null, clockOutTime: null, totalBreakDuration: 0, breaks: [] };
-        }
-
-        // --- UI & TIME FUNCTIONS ---
-        function updateClock() {
-            const now = new Date();
-            clockDisplay.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            dateDisplay.textContent = now.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-            if (currentState.status === 'clockedIn' || currentState.status === 'onBreak') updateSummary();
-        }
-
-        function updateUI() {
-            updateStatusBadge();
-            updateActionButtons();
-            updateSummary();
-            if (window.lucide) lucide.createIcons();
-        }
-
-        function updateStatusBadge() {
-            statusBadge.classList.remove('bg-gray-500', 'bg-green-500', 'bg-yellow-500');
-            switch (currentState.status) {
-                case 'clockedIn': statusText.textContent = 'Clocked In'; statusBadge.classList.add('bg-green-500'); break;
-                case 'onBreak': statusText.textContent = 'On Break'; statusBadge.classList.add('bg-yellow-500'); break;
-                default: statusText.textContent = 'Clocked Out'; statusBadge.classList.add('bg-gray-500'); break;
-            }
-        }
-
-        function updateActionButtons() {
-            clockInBtn.classList.toggle('hidden', currentState.status !== 'clockedOut');
-            startBreakBtn.classList.toggle('hidden', currentState.status !== 'clockedIn');
-            endBreakBtn.classList.toggle('hidden', currentState.status !== 'onBreak');
-            clockOutBtn.classList.toggle('hidden', currentState.status === 'clockedOut' || currentState.status === 'onBreak');
-        }
-
-        function updateSummary() {
-            summaryClockIn.textContent = currentState.clockInTime ? currentState.clockInTime.toLocaleTimeString() : '--:--:--';
-            summaryTotalBreak.textContent = formatDuration(currentState.totalBreakDuration);
-            if (currentState.clockInTime) {
-                const endTime = currentState.clockOutTime || new Date();
-                let totalElapsed = endTime - currentState.clockInTime;
-                let totalWorkMs = totalElapsed - currentState.totalBreakDuration;
-                if (currentState.status === 'onBreak') {
-                    const lastBreak = currentState.breaks[currentState.breaks.length - 1];
-                    if (lastBreak && lastBreak.startTime && !lastBreak.endTime) {
-                        totalWorkMs -= (new Date() - lastBreak.startTime.toDate());
-                    }
-                }
-                summaryTotalHours.textContent = formatDuration(Math.max(0, totalWorkMs));
-            } else {
-                summaryTotalHours.textContent = '0h 0m 0s';
-            }
-        }
-
-        function formatDuration(ms) {
-            if (ms < 0) ms = 0;
-            const s = Math.floor(ms / 1000);
-            return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ${s%60}s`;
-        }
-
-        async function renderHistory() {
-            if (!isAuthReady || !userId) return;
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/attendance`);
-            const q = query(historyCollectionRef);
-            try {
-                const querySnapshot = await getDocs(q);
-                let historyHtml = '';
-                const docs = [];
-                querySnapshot.forEach(doc => docs.push(doc.data()));
-                docs.sort((a, b) => new Date(b.date) - new Date(a.date));
-                docs.forEach(data => {
-                    const clockIn = data.clockInTime && data.clockInTime.toDate ? data.clockInTime.toDate().toLocaleTimeString() : 'N/A';
-                    const clockOut = data.clockOutTime && data.clockOutTime.toDate ? data.clockOutTime.toDate().toLocaleTimeString() : 'N/A';
-                    const breakDur = formatDuration(data.totalBreakDuration || 0);
-                    let totalHours = 'N/A';
-                    if (data.clockInTime && data.clockOutTime && data.clockInTime.toDate && data.clockOutTime.toDate) {
-                        totalHours = formatDuration(data.clockOutTime.toDate() - data.clockInTime.toDate() - (data.totalBreakDuration || 0));
-                    }
-                    historyHtml += `<tr class="border-b border-gray-200"><td class="py-3 px-4">${data.date}</td><td class="py-3 px-4">${clockIn}</td><td class="py-3 px-4">${clockOut}</td><td class="py-3 px-4">${breakDur}</td><td class="py-3 px-4 font-medium">${totalHours}</td></tr>`;
-                });
-                historyTableBody.innerHTML = historyHtml || '<tr><td colspan="5" class="text-center py-4">No attendance history found.</td></tr>';
-            } catch (error) {
-                console.error("Error fetching history:", error);
-                historyTableBody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-red-500">Could not load history.</td></tr>';
-            }
-        }
-
-        // --- QR CODE MODAL ---
-        function showQrCodeModal(action) {
-            if (!isAuthReady || !userId) return;
-            const payload = { userId, action, timestamp: Date.now() };
-            new QRious({ element: qrCanvas, value: JSON.stringify(payload), size: 256, padding: 16, level: 'H', foreground: '#1f2937', background: '#ffffff' });
-            qrMessage.textContent = `Present this QR code to the scanner to ${action.replace('-', ' ')}.`;
-            qrModal.classList.remove('hidden');
-            qrTimer = setTimeout(() => {
-                qrMessage.textContent = 'Scan successful! Logging your time...';
-                if (action === 'clock-in') handleClockIn();
-                else if (action === 'clock-out') handleClockOut();
-                setTimeout(hideQrCodeModal, 1500);
-            }, 3000);
-        }
-
-        function hideQrCodeModal() {
-            if (qrTimer) clearTimeout(qrTimer);
-            qrModal.classList.add('hidden');
-        }
-
-        // --- EVENT HANDLERS ---
-        async function handleClockIn() {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const docRef = doc(db, `artifacts/${appId}/users/${userId}/attendance`, todayDocId);
-            try { 
-                await setDoc(docRef, { date: todayDocId, clockInTime: serverTimestamp(), status: 'clockedIn', totalBreakDuration: 0, breaks: [] }); 
-                await renderHistory(); 
-            }
-            catch (error) { console.error("Error clocking in:", error); }
-        }
-        async function handleStartBreak() {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const docRef = doc(db, `artifacts/${appId}/users/${userId}/attendance`, todayDocId);
-            const updatedBreaks = [...currentState.breaks, { startTime: Timestamp.now(), endTime: null }];
-            try { await updateDoc(docRef, { status: 'onBreak', breaks: updatedBreaks }); }
-            catch (error) { console.error("Error starting break:", error); }
-        }
-        async function handleEndBreak() {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const docRef = doc(db, `artifacts/${appId}/users/${userId}/attendance`, todayDocId);
-            const updatedBreaks = [...currentState.breaks];
-            if (updatedBreaks.length > 0) updatedBreaks[updatedBreaks.length - 1].endTime = Timestamp.now();
-            const newTotalBreakDuration = updatedBreaks.reduce((total, br) => total + (br.endTime && br.startTime ? br.endTime.toMillis() - br.startTime.toMillis() : 0), 0);
-            try { await updateDoc(docRef, { status: 'clockedIn', breaks: updatedBreaks, totalBreakDuration: newTotalBreakDuration }); }
-            catch (error) { console.error("Error ending break:", error); }
-        }
-        async function handleClockOut() {
-            if (currentState.status === 'onBreak') { alert("Please end your break before clocking out."); return; }
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const docRef = doc(db, `artifacts/${appId}/users/${userId}/attendance`, todayDocId);
-            try { await updateDoc(docRef, { status: 'clockedOut', clockOutTime: serverTimestamp() }); setTimeout(renderHistory, 1000); }
-            catch (error) { console.error("Error clocking out:", error); }
-        }
-
-        // --- GEMINI API FEATURE ---
-        async function handleGenerateReport() {
-            if (!isAuthReady || !userId) return;
-
-            reportContent.innerHTML = '';
-            reportLoading.classList.remove('hidden');
-            reportModal.classList.remove('hidden');
-
-            try {
-                // 1. Fetch last 7 days of data
-                const sevenDaysAgo = new Date();
-                sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-                const sevenDaysAgoStr = sevenDaysAgo.toISOString().slice(0, 10);
-
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-                const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/attendance`);
-                const q = query(historyCollectionRef, where("date", ">=", sevenDaysAgoStr));
-                
-                const querySnapshot = await getDocs(q);
-                const weeklyData = [];
-                querySnapshot.forEach(doc => weeklyData.push(doc.data()));
-
-                if (weeklyData.length === 0) {
-                    reportContent.innerHTML = '<p>No data found for the last 7 days to generate a report.</p>';
-                    reportLoading.classList.add('hidden');
-                    return;
-                }
-
-                // 2. Format data for the prompt
-                let promptData = "Here is the employee's work data for the last 7 days:\n";
-                weeklyData.sort((a, b) => new Date(a.date) - new Date(b.date)); // Chronological
-                weeklyData.forEach(data => {
-                    if (data.clockInTime && data.clockOutTime && data.clockInTime.toDate && data.clockOutTime.toDate) {
-                        const totalHours = formatDuration(data.clockOutTime.toDate() - data.clockInTime.toDate() - (data.totalBreakDuration || 0));
-                        promptData += `- Date: ${data.date}, Clock In: ${data.clockInTime.toDate().toLocaleTimeString()}, Clock Out: ${data.clockOutTime.toDate().toLocaleTimeString()}, Total Hours: ${totalHours}\n`;
-                    }
-                });
-
-                const prompt = `You are a helpful HR assistant. Analyze the following weekly work data and provide a brief, encouraging summary for the employee. Include the total hours worked for the week and one or two insightful comments on their work pattern (like consistency, long days, etc.). Present the result in simple Markdown. \n\n${promptData}`;
-
-                // 3. Call Gemini API
-                const apiKey = ""; // API key will be injected by the environment
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-                
-                const payload = {
-                    contents: [{
-                        parts: [{ text: prompt }]
-                    }]
-                };
-
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                if (!response.ok) {
-                    throw new Error(`API call failed with status: ${response.status}`);
-                }
-
-                const result = await response.json();
-                const reportText = result.candidates?.[0]?.content?.parts?.[0]?.text || "No report generated.";
-
-                // 4. Display the report
-                reportContent.innerHTML = marked.parse(reportText);
-
-            } catch (error) {
-                console.error("Error generating report:", error);
-                reportContent.innerHTML = `<p class="text-red-500">Sorry, we couldn't generate the report at this time. Please try again later.</p>`;
-            } finally {
-                reportLoading.classList.add('hidden');
-            }
-        }
-
-        // --- INITIALIZATION ---
-        clockInBtn.addEventListener('click', () => showQrCodeModal('clock-in'));
-        clockOutBtn.addEventListener('click', () => showQrCodeModal('clock-out'));
-        startBreakBtn.addEventListener('click', handleStartBreak);
-        endBreakBtn.addEventListener('click', handleEndBreak);
-        closeModalBtn.addEventListener('click', hideQrCodeModal);
-        generateReportBtn.addEventListener('click', handleGenerateReport);
-        closeReportModalBtn.addEventListener('click', () => reportModal.classList.add('hidden'));
-
-        setInterval(updateClock, 1000);
-        updateClock();
-        setupFirebase();
-        if (window.lucide) lucide.createIcons();
-    </script>
-
-    <div class="container mx-auto p-4 md:p-8 max-w-4xl relative">
-        <div id="loading-overlay" class="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center z-50">
-            <div class="text-center"><svg class="animate-spin h-8 w-8 text-blue-600 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><p class="mt-2 text-lg font-medium text-gray-700">Initializing...</p></div>
+        <div class="flex border-b border-gray-200 mb-6">
+            <button class="tab-btn active px-4 py-2 font-medium border-b-2 border-indigo-600 text-indigo-600" data-tab="dashboard">Dashboard</button>
+            <button class="tab-btn px-4 py-2 font-medium text-gray-500 hover:text-indigo-600" data-tab="scan">Scan QR</button>
+            <button class="tab-btn px-4 py-2 font-medium text-gray-500 hover:text-indigo-600" data-tab="reports">Reports</button>
+            <button class="tab-btn px-4 py-2 font-medium text-gray-500 hover:text-indigo-600" data-tab="employees">Employees</button>
         </div>
-        <header class="text-center mb-8"><h1 class="text-4xl font-bold text-gray-800">Attendance Tracker</h1><p id="user-id-display" class="text-sm text-gray-500 mt-2">Initializing...</p></header>
-        <div class="bg-white rounded-xl shadow-lg p-6 md:p-8">
-            <div class="flex flex-col md:flex-row justify-between items-center mb-8">
-                <div class="text-center md:text-left mb-4 md:mb-0"><p id="clock-display" class="text-5xl font-bold text-blue-600">12:00:00 PM</p><p id="date-display" class="text-lg text-gray-500">Friday, August 1, 2025</p></div>
-                <div id="status-badge" class="status-badge flex items-center justify-center py-2 px-6 rounded-full text-white font-bold text-lg"><span id="status-text">Clocked Out</span></div>
+        
+        <div id="dashboard" class="tab-content">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+                <div class="card bg-white rounded-lg shadow p-6"><h2 class="text-xl font-semibold mb-2">Total Employees</h2><p class="text-4xl font-bold text-indigo-600" id="total-employees">0</p></div>
+                <div class="card bg-white rounded-lg shadow p-6"><h2 class="text-xl font-semibold mb-2">Present Today</h2><p class="text-4xl font-bold text-green-600" id="present-today">0</p></div>
+                <div class="card bg-white rounded-lg shadow p-6"><h2 class="text-xl font-semibold mb-2">Late Comers</h2><p class="text-4xl font-bold text-amber-600" id="late-comers">0</p></div>
+                <div class="card bg-white rounded-lg shadow p-6"><h2 class="text-xl font-semibold mb-2">Avg Hours</h2><p class="text-4xl font-bold text-blue-600" id="avg-hours">0</p></div>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                <button id="clock-in-btn" class="btn-action w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-lg flex items-center justify-center text-lg shadow-md"><i data-lucide="qr-code" class="mr-2"></i> Clock In</button>
-                <button id="start-break-btn" class="btn-action w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-4 rounded-lg flex items-center justify-center text-lg shadow-md hidden"><i data-lucide="coffee" class="mr-2"></i> Start Break</button>
-                <button id="end-break-btn" class="btn-action w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 rounded-lg flex items-center justify-center text-lg shadow-md hidden"><i data-lucide="play-circle" class="mr-2"></i> End Break</button>
-                <button id="clock-out-btn" class="btn-action w-full bg-red-500 hover:bg-red-600 text-white font-bold py-4 rounded-lg flex items-center justify-center text-lg shadow-md hidden"><i data-lucide="qr-code" class="mr-2"></i> Clock Out</button>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-2 card bg-white rounded-lg shadow p-6"><h2 class="text-xl font-semibold mb-4">Today's Attendance</h2><div class="overflow-x-auto"><table class="min-w-full"><thead><tr class="border-b"><th class="text-left py-2 px-3">Name</th><th class="text-left py-2 px-3">Status</th><th class="text-left py-2 px-3">Time In</th><th class="text-left py-2 px-3">Time Out</th></tr></thead><tbody id="today-attendance"></tbody></table></div></div>
+                <div class="card bg-white rounded-lg shadow p-6"><h2 class="text-xl font-semibold mb-4">Upcoming Birthdays</h2><div id="birthdays-list"></div></div>
             </div>
-            <div class="bg-gray-50 rounded-lg p-6">
-                <h2 class="text-xl font-semibold mb-4 text-gray-700">Today's Summary</h2>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-                    <div><p class="text-sm text-gray-500">Clocked In At</p><p id="summary-clock-in" class="text-2xl font-semibold text-gray-800">--:--:--</p></div>
-                    <div><p class="text-sm text-gray-500">Total Break</p><p id="summary-total-break" class="text-2xl font-semibold text-gray-800">0h 0m 0s</p></div>
-                    <div><p class="text-sm text-gray-500">Total Hours</p><p id="summary-total-hours" class="text-2xl font-semibold text-green-600">0h 0m 0s</p></div>
+        </div>
+        
+        <div id="scan" class="tab-content hidden">
+            <div class="card bg-white rounded-lg shadow p-6 max-w-2xl mx-auto">
+                <h2 class="text-2xl font-semibold mb-4 text-center">Scan Employee QR Code</h2>
+                <div id="reader"></div>
+                <div id="scan-result" class="text-center mt-4 text-lg font-medium"></div>
+            </div>
+        </div>
+        
+        <div id="reports" class="tab-content hidden">
+            <div class="card bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">Generate Report</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div><label class="block text-sm font-medium text-gray-700 mb-1">Employee</label><select id="report-employee" class="w-full p-2 border rounded bg-white"><option value="all">All Employees</option></select></div>
+                    <div><label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label><input type="date" id="start-date" class="w-full p-2 border rounded"></div>
+                    <div><label class="block text-sm font-medium text-gray-700 mb-1">End Date</label><input type="date" id="end-date" class="w-full p-2 border rounded"></div>
+                </div>
+                <button id="generate-report" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Generate</button>
+                <div id="report-results" class="mt-6 hidden">
+                    <h3 class="text-lg font-semibold mb-4">Report Chart: Hours Worked</h3>
+                    <div class="mb-6"><canvas id="report-chart"></canvas></div>
+                    <div class="flex justify-between items-center mb-2"><h3 class="text-lg font-semibold">Report Data</h3><button id="export-csv" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 text-sm">Export as CSV</button></div>
+                    <div class="overflow-x-auto"><table class="min-w-full"><thead><tr class="border-b"><th class="text-left py-2">Date</th><th class="text-left py-2">Employee</th><th class="text-left py-2">Check-in</th><th class="text-left py-2">Check-out</th><th class="text-left py-2">Hours Worked</th></tr></thead><tbody id="report-table"></tbody></table></div>
                 </div>
             </div>
         </div>
-        <div class="bg-white rounded-xl shadow-lg p-6 md:p-8 mt-8">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-2xl font-bold text-gray-700">Attendance History</h2>
-                <button id="generate-report-btn" class="btn-action bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center text-sm shadow-md">
-                    <i data-lucide="sparkles" class="mr-2 h-4 w-4"></i> Generate Weekly Report
-                </button>
-            </div>
-            <div class="overflow-x-auto"><table class="w-full text-left">
-                <thead><tr class="bg-gray-100 text-gray-600 uppercase text-sm"><th class="py-3 px-4 rounded-l-lg">Date</th><th class="py-3 px-4">Clock In</th><th class="py-3 px-4">Clock Out</th><th class="py-3 px-4">Break</th><th class="py-3 px-4 rounded-r-lg">Total Hours</th></tr></thead>
-                <tbody id="history-table-body" class="text-gray-700"></tbody>
-            </table></div>
-        </div>
-    </div>
-
-    <!-- QR Code Modal -->
-    <div id="qr-modal" class="modal-overlay fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
-        <div class="bg-white rounded-xl shadow-2xl p-8 text-center max-w-sm w-full mx-4"><h2 class="text-2xl font-bold mb-4 text-gray-800">Scan QR Code</h2><canvas id="qr-canvas" class="mx-auto border-4 border-gray-200 rounded-lg"></canvas><p id="qr-message" class="mt-4 text-gray-600 min-h-[40px]"></p><button id="close-modal-btn" class="mt-6 w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg">Cancel</button></div>
-    </div>
-
-    <!-- Weekly Report Modal -->
-    <div id="report-modal" class="modal-overlay fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
-        <div class="bg-white rounded-xl shadow-2xl p-8 max-w-lg w-full mx-4">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-2xl font-bold text-gray-800">Your Weekly Report</h2>
-                <button id="close-report-modal-btn" class="text-gray-500 hover:text-gray-800"><i data-lucide="x" class="h-6 w-6"></i></button>
-            </div>
-            <div id="report-loading" class="text-center hidden">
-                <svg class="animate-spin h-8 w-8 text-purple-600 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                <p class="mt-2 text-lg font-medium text-gray-700">✨ Generating your report with Gemini...</p>
-            </div>
-            <div id="report-content" class="prose max-w-none text-gray-700"></div>
+        
+        <div id="employees" class="tab-content hidden">
+            <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-semibold">Employee Management</h2><button id="add-employee-btn" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Add Employee</button></div>
+            <div class="card bg-white rounded-lg shadow p-6"><div class="overflow-x-auto"><table class="min-w-full"><thead><tr class="border-b"><th class="text-left py-2">Name</th><th class="text-left py-2">Position</th><th class="text-left py-2">Department</th><th class="text-left py-2">QR Code</th><th class="text-left py-2">Actions</th></tr></thead><tbody id="employee-list"></tbody></table></div></div>
         </div>
     </div>
     
-    <script>
-      if (window.lucide) lucide.createIcons();
-    </script>
+    <div id="employee-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+        <div class="modal-content bg-white rounded-lg p-8 w-full max-w-md shadow-xl"><h2 class="text-2xl font-semibold mb-6" id="modal-title">Add New Employee</h2><form id="employee-form"><input type="hidden" id="employee-id"><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Full Name</label><input type="text" id="employee-name" class="w-full p-2 border rounded" required></div><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Position</label><input type="text" id="employee-position" class="w-full p-2 border rounded" required></div><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Department</label><input type="text" id="employee-dept" class="w-full p-2 border rounded" required></div><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label><input type="date" id="employee-dob" class="w-full p-2 border rounded" required></div><div class="flex justify-end gap-4 mt-6"><button type="button" id="cancel-employee" class="bg-gray-300 text-gray-800 px-4 py-2 rounded hover:bg-gray-400">Cancel</button><button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Save Employee</button></div></form></div>
+    </div>
+    <div id="qr-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+        <div class="modal-content bg-white rounded-lg p-6 w-full max-w-sm text-center"><h2 class="text-xl font-semibold mb-4">Employee QR Code</h2><div id="employee-qr-code" class="mx-auto mb-4 p-4 border rounded-lg inline-block"></div><p id="qr-employee-name" class="font-medium text-lg"></p><p id="qr-employee-id" class="text-sm text-gray-600 mb-4"></p><button id="download-qr" class="w-full bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 mb-2">Download QR</button><button id="close-qr" class="w-full bg-gray-300 text-gray-800 px-4 py-2 rounded hover:bg-gray-400">Close</button></div>
+    </div>
+    <div id="toast-container"></div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+
+    // --- CONFIGURATION ---
+    const API_BASE_URL = 'http://localhost:3000/api';
+    const LATE_CHECK_IN_TIME = '09:30';
+
+    // --- DOM ELEMENT SELECTORS ---
+    const tabContents = document.querySelectorAll('.tab-content');
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const employeeList = document.getElementById('employee-list');
+    const employeeForm = document.getElementById('employee-form');
+    const addEmployeeBtn = document.getElementById('add-employee-btn');
+    const employeeModal = document.getElementById('employee-modal');
+    const qrModal = document.getElementById('qr-modal');
+    const todayAttendance = document.getElementById('today-attendance');
+    const birthdaysList = document.getElementById('birthdays-list');
+    const reportTable = document.getElementById('report-table');
+    const reportEmployeeSelect = document.getElementById('report-employee');
+    const generateReportBtn = document.getElementById('generate-report');
+    const exportCsvBtn = document.getElementById('export-csv');
+    const reportResults = document.getElementById('report-results');
+    const themeToggle = document.getElementById('theme-toggle');
+    const totalEmployeesEl = document.getElementById('total-employees');
+    const presentTodayEl = document.getElementById('present-today');
+    const lateComersEl = document.getElementById('late-comers');
+    const avgHoursEl = document.getElementById('avg-hours');
+    const scanResult = document.getElementById('scan-result');
+    const modalTitle = document.getElementById('modal-title');
+    const employeeIdInput = document.getElementById('employee-id');
+
+    // --- GLOBAL VARIABLES ---
+    let html5QrCode;
+    let reportChart;
+    let currentEmployees = []; // Cache for employee data
+    let currentTheme = localStorage.getItem('theme') || 'light';
+
+    // --- UTILITY & HELPER FUNCTIONS ---
+
+    const showToast = (message, type = 'info') => {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => toast.classList.add('show'), 10);
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 500);
+        }, 4000);
+    };
+
+    const calculateHoursWorked = (record) => {
+        if (!record.checkIn || !record.checkOut) return 'N/A';
+        // Dates are not relevant here, only the time difference
+        const checkIn = new Date(`1970-01-01T${record.checkIn}:00`);
+        const checkOut = new Date(`1970-01-01T${record.checkOut}:00`);
+        const diff = checkOut - checkIn;
+        return (diff / (1000 * 60 * 60)).toFixed(1);
+    };
+
+    const generateQrCodeSvg = (employeeId) => {
+        const qr = qrcode(0, 'L');
+        qr.addData(JSON.stringify({ employeeId }));
+        qr.make();
+        return qr.createSvgTag(4);
+    };
+
+    // --- CORE API FUNCTIONS ---
+
+    const fetchEmployees = async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/employees`);
+            if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+            currentEmployees = await response.json();
+            return true;
+        } catch (error) {
+            console.error("Could not fetch employees:", error);
+            showToast('Error: Could not connect to the server.', 'error');
+            return false;
+        }
+    };
+
+    // --- DATA RENDERING & UI LOGIC ---
+
+    const refreshAllData = async () => {
+        const success = await fetchEmployees();
+        if (success) {
+            renderEmployeeTable();
+            renderDashboard();
+            populateEmployeeSelect();
+        }
+    };
+
+    const renderEmployeeTable = () => {
+        employeeList.innerHTML = '';
+        currentEmployees.forEach(employee => {
+            const tr = document.createElement('tr');
+            tr.className = 'border-b';
+            tr.innerHTML = `
+                <td class="py-3 px-2">${employee.name}</td>
+                <td class="py-3 px-2">${employee.position}</td>
+                <td class="py-3 px-2">${employee.department}</td>
+                <td class="py-3 px-2"><button class="view-qr text-indigo-600 hover:underline" data-id="${employee.id}">View</button></td>
+                <td class="py-3 px-2 flex gap-4">
+                    <button class="edit-employee text-blue-600 hover:underline" data-id="${employee.id}">Edit</button>
+                    <button class="delete-employee text-red-600 hover:underline" data-id="${employee.id}">Delete</button>
+                </td>
+            `;
+            employeeList.appendChild(tr);
+        });
+    };
+
+    const renderDashboard = () => {
+        const today = new Date().toISOString().split('T')[0];
+        
+        totalEmployeesEl.textContent = currentEmployees.length;
+
+        const presentEmployees = currentEmployees.filter(emp => emp.attendance.some(rec => rec.date === today && rec.checkIn));
+        presentTodayEl.textContent = presentEmployees.length;
+
+        const lateComers = presentEmployees.filter(emp => {
+            const todayRecord = emp.attendance.find(rec => rec.date === today);
+            return todayRecord && todayRecord.checkIn > LATE_CHECK_IN_TIME;
+        }).length;
+        lateComersEl.textContent = lateComers;
+
+        const totalHours = presentEmployees.reduce((acc, emp) => {
+            const todayRecord = emp.attendance.find(rec => rec.date === today);
+            if (todayRecord && todayRecord.checkOut) {
+                return acc + parseFloat(calculateHoursWorked(todayRecord));
+            }
+            return acc;
+        }, 0);
+        const checkedOutCount = presentEmployees.filter(e => e.attendance.find(r => r.date === today && r.checkOut)).length;
+        avgHoursEl.textContent = (checkedOutCount > 0 ? (totalHours / checkedOutCount) : 0).toFixed(1);
+
+        todayAttendance.innerHTML = '';
+        presentEmployees.forEach(employee => {
+            const todayRecord = employee.attendance.find(record => record.date === today);
+            if (todayRecord) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="py-2 px-3">${employee.name}</td>
+                    <td class="py-2 px-3"><span class="text-green-600 font-semibold">Present</span></td>
+                    <td class="py-2 px-3">${todayRecord.checkIn} ${todayRecord.checkIn > LATE_CHECK_IN_TIME ? '<span class="text-xs text-amber-600 font-bold ml-1">LATE</span>' : ''}</td>
+                    <td class="py-2 px-3">${todayRecord.checkOut || 'Not signed out'}</td>
+                `;
+                todayAttendance.appendChild(tr);
+            }
+        });
+
+        birthdaysList.innerHTML = '';
+        const upcomingBirthdays = currentEmployees.filter(emp => {
+            const dob = new Date(emp.dob);
+            const now = new Date();
+            // Check for birthdays in the current month on or after today
+            return dob.getUTCMonth() === now.getUTCMonth() && dob.getUTCDate() >= now.getUTCDate();
+        }).sort((a, b) => new Date(a.dob).getUTCDate() - new Date(b.dob).getUTCDate());
+        
+        if (upcomingBirthdays.length === 0) {
+            birthdaysList.innerHTML = '<p class="text-gray-500">No upcoming birthdays this month.</p>';
+        } else {
+            upcomingBirthdays.forEach(emp => {
+                const dob = new Date(emp.dob);
+                const div = document.createElement('div');
+                div.className = 'flex items-center justify-between py-2 border-b';
+                div.innerHTML = `
+                    <div><p class="font-medium">${emp.name}</p><p class="text-sm text-gray-600">${emp.department}</p></div>
+                    <span class="birthday-badge bg-pink-100 text-pink-800 px-2 py-1 rounded-full text-xs font-semibold">${dob.getUTCDate()} ${dob.toLocaleString('default', { month: 'short' })}</span>
+                `;
+                birthdaysList.appendChild(div);
+            });
+        }
+    };
+
+    const populateEmployeeSelect = () => {
+        reportEmployeeSelect.innerHTML = '<option value="all">All Employees</option>';
+        currentEmployees.forEach(emp => {
+            const option = document.createElement('option');
+            option.value = emp.id;
+            option.textContent = emp.name;
+            reportEmployeeSelect.appendChild(option);
+        });
+    };
+
+    // --- MODAL & FORM HANDLING ---
+
+    const openEmployeeModal = (mode = 'add', employeeId = null) => {
+        employeeForm.reset();
+        if (mode === 'edit') {
+            const employee = currentEmployees.find(e => e.id === employeeId);
+            if (!employee) return;
+            modalTitle.textContent = 'Edit Employee';
+            employeeIdInput.value = employee.id;
+            document.getElementById('employee-name').value = employee.name;
+            document.getElementById('employee-position').value = employee.position;
+            document.getElementById('employee-dept').value = employee.department;
+            document.getElementById('employee-dob').value = new Date(employee.dob).toISOString().split('T')[0];
+        } else {
+            modalTitle.textContent = 'Add New Employee';
+            employeeIdInput.value = '';
+        }
+        employeeModal.classList.remove('hidden');
+    };
+
+    const closeEmployeeModal = () => employeeModal.classList.add('hidden');
+
+    const handleEmployeeFormSubmit = async (e) => {
+        e.preventDefault();
+        const id = employeeIdInput.value;
+        const employeeData = {
+            name: document.getElementById('employee-name').value,
+            position: document.getElementById('employee-position').value,
+            department: document.getElementById('employee-dept').value,
+            dob: document.getElementById('employee-dob').value,
+        };
+
+        let url = `${API_BASE_URL}/employees`;
+        let method = 'POST';
+
+        if (id) { // Edit Mode
+            url = `${API_BASE_URL}/employees/${id}`;
+            method = 'PUT';
+        } else { // Add Mode
+            employeeData.id = 'emp' + Date.now().toString(36);
+        }
+
+        try {
+            const response = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(employeeData)
+            });
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.message || 'Server returned an error.');
+            }
+            showToast(`Employee ${id ? 'updated' : 'added'} successfully!`, 'success');
+            await refreshAllData();
+            closeEmployeeModal();
+        } catch (error) {
+            showToast(`Error: ${error.message}`, 'error');
+        }
+    };
+
+    const handleDeleteEmployee = async (e) => {
+        if (!e.target.classList.contains('delete-employee')) return;
+        const id = e.target.getAttribute('data-id');
+        const employee = currentEmployees.find(emp => emp.id === id);
+        
+        if (confirm(`Are you sure you want to delete ${employee.name}? This will also delete all their attendance records.`)) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/employees/${id}`, { method: 'DELETE' });
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.message || 'Server returned an error.');
+                }
+                showToast('Employee deleted.', 'info');
+                await refreshAllData();
+            } catch (error) {
+                showToast(`Error: ${error.message}`, 'error');
+            }
+        }
+    };
+
+    const handleEditEmployee = (e) => {
+        if (!e.target.classList.contains('edit-employee')) return;
+        openEmployeeModal('edit', e.target.getAttribute('data-id'));
+    };
+
+    const showQRCodeModal = (e) => {
+        if (!e.target.classList.contains('view-qr')) return;
+        const id = e.target.getAttribute('data-id');
+        const employee = currentEmployees.find(emp => emp.id === id);
+        
+        if (employee) {
+            document.getElementById('employee-qr-code').innerHTML = generateQrCodeSvg(employee.id);
+            document.getElementById('qr-employee-name').textContent = employee.name;
+            document.getElementById('qr-employee-id').textContent = `ID: ${employee.id}`;
+            qrModal.classList.remove('hidden');
+            
+            document.getElementById('download-qr').onclick = () => {
+                const svg = document.querySelector('#employee-qr-code svg');
+                let source = new XMLSerializer().serializeToString(svg);
+                source = '<?xml version="1.0" standalone="no"?>\r\n' + source;
+                const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
+                const link = document.createElement('a');
+                link.download = `${employee.name.replace(/ /g, '_')}_QR.svg`;
+                link.href = url;
+                link.click();
+            };
+        }
+    };
+
+    // --- SCANNER FUNCTIONS ---
+
+    const onScanSuccess = async (decodedText) => {
+        try {
+            const data = JSON.parse(decodedText);
+            if (!data.employeeId) {
+                showToast('Invalid QR Code: No employee ID found.', 'error');
+                return;
+            }
+
+            const employee = currentEmployees.find(e => e.id === data.employeeId);
+            if (!employee) {
+                showToast(`Employee with ID ${data.employeeId} not found.`, 'error');
+                return;
+            }
+
+            const response = await fetch(`${API_BASE_URL}/attendance/${data.employeeId}`, { method: 'POST' });
+            if (!response.ok) throw new Error('Server error during attendance update');
+            
+            const result = await response.json();
+            showToast(`${result.message}: ${employee.name}`, result.message === 'Checked In' ? 'success' : 'info');
+            
+            await refreshAllData(); // Refresh all data to reflect the change
+            
+        } catch (err) {
+            showToast('Failed to process QR code. Ensure it is a valid employee code.', 'error');
+            console.error("QR Scan Error:", err);
+        }
+    };
+
+    const onScanFailure = (error) => { /* Optional: handle scan failure */ };
+    
+    const startScanner = () => {
+        if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
+        
+        // Prevent starting if already scanning
+        if (html5QrCode.isScanning) return;
+
+        scanResult.innerHTML = 'Starting camera...';
+        html5QrCode.start(
+            { facingMode: "environment" },
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            onScanSuccess,
+            onScanFailure
+        ).catch(err => {
+            scanResult.innerHTML = `<span class="text-red-500">Could not start scanner. Please grant camera permissions.</span>`;
+        });
+    };
+
+    const stopScanner = () => {
+        if (html5QrCode && html5QrCode.isScanning) {
+            html5QrCode.stop().catch(err => console.error("Failed to stop scanner.", err));
+        }
+    };
+
+    // --- REPORTING FUNCTIONS ---
+
+    const generateReport = () => {
+        const employeeId = reportEmployeeSelect.value;
+        const startDate = document.getElementById('start-date').value;
+        const endDate = document.getElementById('end-date').value;
+        
+        if (!startDate || !endDate) {
+            showToast('Please select both a start and end date.', 'error');
+            return;
+        }
+        
+        reportTable.innerHTML = '';
+        const reportData = [];
+
+        currentEmployees.forEach(emp => {
+            if (employeeId !== 'all' && emp.id !== employeeId) return;
+            emp.attendance.forEach(record => {
+                if (record.date >= startDate && record.date <= endDate) {
+                    reportData.push({ ...record, employeeName: emp.name });
+                }
+            });
+        });
+
+        reportData.sort((a,b) => new Date(a.date) - new Date(b.date));
+
+        if (reportData.length === 0) {
+            reportTable.innerHTML = '<tr><td colspan="5" class="text-center py-4">No data found for the selected criteria.</td></tr>';
+        } else {
+            reportData.forEach(data => {
+                const tr = document.createElement('tr');
+                tr.className = 'border-b';
+                tr.innerHTML = `
+                    <td class="py-2">${data.date}</td>
+                    <td class="py-2">${data.employeeName}</td>
+                    <td class="py-2">${data.checkIn || 'N/A'}</td>
+                    <td class="py-2">${data.checkOut || 'N/A'}</td>
+                    <td class="py-2">${calculateHoursWorked(data)}</td>
+                `;
+                reportTable.appendChild(tr);
+            });
+        }
+        
+        renderReportChart(reportData, employeeId === 'all');
+        reportResults.classList.remove('hidden');
+    };
+
+    const renderReportChart = (reportData, isAllEmployees) => {
+        const ctx = document.getElementById('report-chart').getContext('2d');
+        const chartData = {};
+
+        if (isAllEmployees) { // Aggregate hours by date for all employees
+            reportData.forEach(rec => {
+                const hours = parseFloat(calculateHoursWorked(rec));
+                if (!isNaN(hours)) chartData[rec.date] = (chartData[rec.date] || 0) + hours;
+            });
+        } else { // Show hours per day for a single employee
+            reportData.forEach(rec => {
+                const hours = parseFloat(calculateHoursWorked(rec));
+                chartData[rec.date] = isNaN(hours) ? 0 : hours;
+            });
+        }
+
+        const labels = Object.keys(chartData).sort();
+        const dataPoints = labels.map(label => chartData[label]);
+
+        if (reportChart) reportChart.destroy();
+
+        reportChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: isAllEmployees ? 'Total Hours Worked by All' : 'Hours Worked',
+                    data: dataPoints,
+                    backgroundColor: 'rgba(79, 70, 229, 0.7)',
+                    borderColor: 'rgba(79, 70, 229, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: { scales: { y: { beginAtZero: true } } }
+        });
+    };
+
+    const exportToCSV = () => {
+        const headers = Array.from(document.querySelectorAll('#report-table th')).map(th => th.textContent);
+        const rows = Array.from(document.querySelectorAll('#report-table tr'));
+        if (rows.length === 0 || rows[0].children[0].colSpan === 5) {
+            showToast('No data to export.', 'info');
+            return;
+        }
+        let csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\r\n";
+        
+        rows.forEach(row => {
+            const cols = Array.from(row.querySelectorAll('td')).map(td => `"${td.textContent}"`);
+            csvContent += cols.join(",") + "\r\n";
+        });
+        
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `attendance_report_${new Date().toISOString().split('T')[0]}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    // --- THEME SWITCHER ---
+    const applyTheme = (theme) => {
+        const lightIcon = document.getElementById('theme-icon-light');
+        const darkIcon = document.getElementById('theme-icon-dark');
+        if (theme === 'dark') {
+            document.body.classList.add('dark-mode');
+            lightIcon.classList.add('hidden');
+            darkIcon.classList.remove('hidden');
+        } else {
+            document.body.classList.remove('dark-mode');
+            lightIcon.classList.remove('hidden');
+            darkIcon.classList.add('hidden');
+        }
+        currentTheme = theme;
+        localStorage.setItem('theme', theme);
+    };
+
+    // --- EVENT LISTENERS ---
+    tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            stopScanner(); // Always stop scanner when switching tabs
+            const tabId = button.getAttribute('data-tab');
+            
+            tabButtons.forEach(btn => btn.classList.remove('active', 'border-indigo-600', 'text-indigo-600'));
+            button.classList.add('active', 'border-indigo-600', 'text-indigo-600');
+            
+            tabContents.forEach(content => content.classList.add('hidden'));
+            document.getElementById(tabId).classList.remove('hidden');
+            
+            if (tabId === 'scan') startScanner();
+        });
+    });
+
+    addEmployeeBtn.addEventListener('click', () => openEmployeeModal('add'));
+    document.getElementById('cancel-employee').addEventListener('click', closeEmployeeModal);
+    document.getElementById('close-qr').addEventListener('click', () => qrModal.classList.add('hidden'));
+    employeeForm.addEventListener('submit', handleEmployeeFormSubmit);
+    employeeList.addEventListener('click', (e) => {
+        handleDeleteEmployee(e);
+        handleEditEmployee(e);
+        showQRCodeModal(e);
+    });
+    generateReportBtn.addEventListener('click', generateReport);
+    exportCsvBtn.addEventListener('click', exportToCSV);
+    themeToggle.addEventListener('click', () => applyTheme(currentTheme === 'dark' ? 'light' : 'dark'));
+
+    // --- INITIALIZATION ---
+    applyTheme(currentTheme);
+    refreshAllData();
+});
+</script>
 </body>
 </html>
