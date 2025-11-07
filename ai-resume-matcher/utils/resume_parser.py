@@ -112,10 +112,10 @@ def extract_contact_info(text: str) -> Dict[str, str]:
 
 def extract_skills_from_text(text: str, nlp=None, min_len: int = 3):
     """
-    Lightweight skill extractor:
-      - takes noun chunks and entities
-      - filters stopwords/punctuation
-      - lowercases and deduplicates
+    Extract skills from resume text using:
+      - spaCy noun chunks (if parser exists)
+      - Entities
+      - Comma/line-separated words
     """
     if nlp is None:
         from utils.model_loader import get_spacy_nlp
@@ -124,26 +124,26 @@ def extract_skills_from_text(text: str, nlp=None, min_len: int = 3):
     doc = nlp(text)
     skills = set()
 
-    # noun chunks
-    for chunk in doc.noun_chunks:
-        s = chunk.text.strip().lower()
-        if len(s) >= min_len and s.isascii():
-            skills.add(s)
+    # ✅ Safe noun_chunk extraction (won't crash if parser missing)
+    try:
+        for chunk in doc.noun_chunks:
+            s = chunk.text.strip().lower()
+            if len(s) >= min_len and s.isascii():
+                skills.add(s)
+    except Exception:
+        pass  # Skip noun_chunks if not available
 
-    # entities (ORG, PRODUCT, etc.)
+    # ✅ Named entities (ORG, PRODUCT, etc.)
     for ent in doc.ents:
         s = ent.text.strip().lower()
         if len(s) >= min_len and s.isascii():
             skills.add(s)
 
-    # Frequent separators list-like "Python, SQL, Pandas"
+    # ✅ Split comma/line/list-style text for skills
     for raw in re.split(r"[\n,;•|/]+", text):
         s = raw.strip().lower()
-        if len(s) >= min_len and s.isascii() and " " not in s:
-            # single-token skills (e.g., python)
-            if re.match(r"^[a-z0-9+\-\.#]+$", s):
+        if len(s) >= min_len and s.isascii():
+            if re.match(r"^[a-z0-9+\-\.# ]+$", s):
                 skills.add(s)
 
-    # Normalize whitespace
-    skills = {re.sub(r"\s+", " ", s) for s in skills}
     return list(skills)
