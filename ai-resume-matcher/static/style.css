@@ -1,9 +1,0 @@
-.mini-card {
-  background: #f8f9fa;
-  padding: 14px;
-  border-radius: 12px;
-  border: 1px solid #e9ecef;
-}
-.mini-card .label { font-size: 12px; color: #6c757d; }
-.mini-card .value { font-size: 20px; font-weight: 600; }
-.skill-cloud .badge { font-weight: 500; }
