@@ -1,70 +1,81 @@
-import re
-from typing import List, Dict, Tuple
-from rapidfuzz import fuzz, process
+from typing import List, Tuple, Dict
 import numpy as np
+import regex as re
 
-SKILL_SETS = {
-    "Programming": ["python","java","javascript","typescript","c++","c#","go","rust","r","matlab","sql","scala","bash","powershell"],
-    "Data & ML": ["pandas","numpy","scikit-learn","tensorflow","pytorch","keras","xgboost","lightgbm","opencv","nlp","spacy","transformers","hugging face","statsmodels","matplotlib","plotly","seaborn","power bi","tableau","snowflake","databricks","airflow","dbt","mlflow"],
-    "Cloud & DevOps": ["aws","azure","gcp","docker","kubernetes","terraform","ansible","linux","git","ci/cd","jenkins","github actions"],
-    "Web & APIs": ["react","node","express","flask","django","fastapi","rest","graphql"],
-    "Soft Skills": ["communication","leadership","stakeholder management","problem solving","presentation","teamwork","mentoring"],
-}
-ALL_SKILLS = sorted({s.lower() for v in SKILL_SETS.values() for s in v})
+def _embed(texts: List[str], model) -> np.ndarray:
+    emb = model.encode(texts, normalize_embeddings=True)
+    if isinstance(emb, list):
+        emb = np.array(emb)
+    return emb
 
-def _extract_skills(text: str, skills: List[str]) -> List[str]:
-    found = set()
-    low = text.lower()
-    for s in skills:
-        # Exact token match
-        if re.search(rf"\b{re.escape(s)}\b", low):
-            found.add(s)
-        else:
-            # Fuzzy fallback (conservative)
-            best, score, _ = process.extractOne(s, [low], scorer=fuzz.partial_ratio)
-            if score >= 95:
-                found.add(s)
-    return sorted(found)
+def compute_semantic_similarity(resume_text: str, jd_text: str, model) -> float:
+    """
+    Cosine similarity between resume and JD embeddings (0..1).
+    """
+    if not resume_text.strip() or not jd_text.strip():
+        return 0.0
+    emb = _embed([resume_text, jd_text], model)
+    v1, v2 = emb[0], emb[1]
+    sim = float(np.clip(np.dot(v1, v2), 0.0, 1.0))
+    return sim
 
-def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-    a = a / (np.linalg.norm(a) + 1e-9)
-    b = b / (np.linalg.norm(b) + 1e-9)
-    return float((a * b).sum())
+def _normalize_tokens(words: List[str], min_len: int) -> List[str]:
+    toks = []
+    for w in words:
+        w = w.strip().lower()
+        w = re.sub(r"[^a-z0-9+#\.\- ]", "", w)
+        w = re.sub(r"\s+", " ", w).strip()
+        if len(w) >= min_len:
+            toks.append(w)
+    return toks
 
-def _jaccard(a, b) -> float:
-    A, B = set(a), set(b)
-    inter = len(A & B)
-    union = len(A | B) or 1
-    return inter / union
+def extract_keywords_from_text(text: str, nlp=None, top_k: int = 50, min_len: int = 3) -> List[str]:
+    """
+    Simple keyword extractor:
+      - keeps nouns, proper nouns, adjectives
+      - lemmatizes and deduplicates
+    """
+    if nlp is None:
+        from utils.model_loader import get_spacy_nlp
+        nlp = get_spacy_nlp()
 
-def get_match_score(resume_text: str, jd_text: str, nlp, model,
-                    w_sem: float = 0.7, w_skills: float = 0.3) -> Tuple[float, Dict]:
-    # Skills
-    resume_skills = _extract_skills(resume_text, ALL_SKILLS)
-    jd_skills = _extract_skills(jd_text, ALL_SKILLS)
+    doc = nlp(text)
+    cands = []
+    for tok in doc:
+        if tok.is_stop or tok.is_punct or len(tok.text) < min_len:
+            continue
+        if tok.pos_ in {"NOUN", "PROPN", "ADJ"}:
+            cands.append(tok.lemma_.lower())
 
-    # (Optional) noun chunks from JD intersect with known skills
-    jd_chunks = {c.text.lower().strip() for c in nlp(jd_text).noun_chunks if 2 <= len(c.text) <= 40}
-    jd_skills = sorted(set(jd_skills) | (jd_chunks & set(ALL_SKILLS)))
+    cands = _normalize_tokens(cands, min_len)
+    # Keep most frequent up to top_k
+    freq = {}
+    for c in cands:
+        freq[c] = freq.get(c, 0) + 1
+    sorted_terms = [k for k, _ in sorted(freq.items(), key=lambda x: x[1], reverse=True)]
+    return sorted_terms[:top_k]
 
-    # Embeddings (semantic)
-    emb_resume = model.encode([resume_text], normalize_embeddings=True)[0]
-    emb_job = model.encode([jd_text], normalize_embeddings=True)[0]
-    sem = _cosine_sim(emb_resume, emb_job)  # ~0..1
+def compute_overlap_score(resume_skills: List[str], jd_keywords: List[str]) -> float:
+    """
+    Jaccard-like overlap on sets (0..1).
+    """
+    rs = set([s.lower() for s in resume_skills])
+    jk = set([k.lower() for k in jd_keywords])
+    if not jk:
+        return 0.0
+    inter = len(rs & jk)
+    return inter / len(jk)
 
-    # Skills overlap
-    jacc = _jaccard(resume_skills, jd_skills)  # 0..1
-
-    final = (w_sem * sem) + (w_skills * jacc)
-    score = round(final * 100, 1)
-
-    info = {
-        "semantic_similarity": round(sem, 3),
-        "skills_jaccard": round(jacc, 3),
-        "resume_skills_count": len(resume_skills),
-        "job_skills_count": len(jd_skills),
-        "matched_skills": sorted(set(resume_skills) & set(jd_skills)),
-        "missing_skills": sorted(set(jd_skills) - set(resume_skills)),
-        "extra_skills": sorted(set(resume_skills) - set(jd_skills)),
+def build_match_breakdown(sim_score: float, overlap_score: float, w_sem: float, w_kw: float) -> Tuple[float, Dict]:
+    """
+    Weighted final score on 0..100
+    """
+    final = (w_sem * sim_score + w_kw * overlap_score) * 100.0
+    breakdown = {
+        "semantic_similarity_pct": round(sim_score * 100.0, 2),
+        "keyword_overlap_pct": round(overlap_score * 100.0, 2),
+        "weights": {"semantic": w_sem, "keywords": w_kw},
+        "formula": "final = (w_sem * semantic + w_kw * overlap) * 100",
+        "final_score": round(final, 2),
     }
-    return score, info
+    return float(final), breakdown
