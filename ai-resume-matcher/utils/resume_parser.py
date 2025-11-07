@@ -112,10 +112,10 @@ def extract_contact_info(text: str) -> Dict[str, str]:
 
 def extract_skills_from_text(text: str, nlp=None, min_len: int = 3):
     """
-    Extract skills from resume text using:
-    - spaCy noun chunks (if parser is available)
-    - Named entities
-    - Manually split words (comma/newline separated)
+    Safe skill extractor:
+    - Works even if spaCy parser is unavailable (no noun_chunks)
+    - Uses noun chunks when possible, otherwise skips gracefully
+    - Extracts entities, keywords, and comma/line-separated skills
     """
     if nlp is None:
         from utils.model_loader import get_spacy_nlp
@@ -124,27 +124,27 @@ def extract_skills_from_text(text: str, nlp=None, min_len: int = 3):
     doc = nlp(text)
     skills = set()
 
-    # ✅ 1. Safely extract noun chunks (avoid crash if no parser present)
+    # ✅ 1. Try noun chunks (skip if parser not available)
     try:
         for chunk in doc.noun_chunks:
-            s = chunk.text.strip().lower()
-            if len(s) >= min_len and s.isascii():
-                skills.add(s)
+            phrase = chunk.text.strip().lower()
+            if len(phrase) >= min_len and phrase.isascii():
+                skills.add(phrase)
     except Exception:
-        # No parser available — skip noun chunk extraction
+        # No parser — safe fail
         pass
 
-    # ✅ 2. Extract named entities (like ORG, PRODUCT, etc.)
+    # ✅ 2. Add named entities (organizations, products, tools, etc.)
     for ent in doc.ents:
-        s = ent.text.strip().lower()
-        if len(s) >= min_len and s.isascii():
-            skills.add(s)
+        phrase = ent.text.strip().lower()
+        if len(phrase) >= min_len and phrase.isascii():
+            skills.add(phrase)
 
-    # ✅ 3. Extract comma/line-separated possible skills
+    # ✅ 3. Add manually split keywords from lines, commas, bullets
     for raw in re.split(r"[\n,;•|/]+", text):
-        s = raw.strip().lower()
-        if len(s) >= min_len and s.isascii():
-            if re.match(r"^[a-z0-9+\-\.# ]+$", s):
-                skills.add(s)
+        phrase = raw.strip().lower()
+        if len(phrase) >= min_len and phrase.isascii():
+            if re.match(r"^[a-z0-9+\-\.# ]+$", phrase):  # Exclude special symbols
+                skills.add(phrase)
 
     return list(skills)
