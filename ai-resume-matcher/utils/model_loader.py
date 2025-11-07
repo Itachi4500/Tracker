@@ -7,9 +7,12 @@ def _ensure_spacy_model():
     try:
         return spacy.load("en_core_web_sm")
     except OSError:
-        # Fallback to blank english if model not installed
-        return spacy.blank("en")
-
+        nlp = spacy.blank("en")
+        # Only add components if available
+        if "tagger" not in nlp.pipe_names:
+            nlp.add_pipe("tagger", config={"model": None}, last=True)
+        return nlp
+        
 @lru_cache(maxsize=1)
 def get_spacy_nlp() -> Any:
     """
@@ -30,3 +33,4 @@ def get_sentence_model(model_name: str):
             "sentence-transformers not installed. Ensure it is in requirements.txt."
         ) from e
     return SentenceTransformer(model_name)
+
