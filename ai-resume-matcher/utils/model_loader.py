@@ -1,14 +1,32 @@
 from functools import lru_cache
-from sentence_transformers import SentenceTransformer
-import spacy
+import importlib
+from typing import Any
 
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-SPACY_MODEL = "en_core_web_sm"
+def _ensure_spacy_model():
+    import spacy
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError:
+        # Fallback to blank english if model not installed
+        return spacy.blank("en")
 
 @lru_cache(maxsize=1)
-def load_models():
-    # Load spaCy (assumes model installed via requirements.txt)
-    nlp = spacy.load(SPACY_MODEL)
-    # Load sentence-transformers model
-    model = SentenceTransformer(MODEL_NAME)
-    return nlp, model
+def get_spacy_nlp() -> Any:
+    """
+    Returns a cached spaCy NLP pipeline.
+    Prefers en_core_web_sm; falls back to blank('en') if not present.
+    """
+    return _ensure_spacy_model()
+
+@lru_cache(maxsize=2)
+def get_sentence_model(model_name: str):
+    """
+    Returns a cached SentenceTransformer model.
+    """
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception as e:
+        raise RuntimeError(
+            "sentence-transformers not installed. Ensure it is in requirements.txt."
+        ) from e
+    return SentenceTransformer(model_name)
