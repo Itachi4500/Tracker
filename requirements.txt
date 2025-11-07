@@ -1,0 +1,9 @@
+streamlit
+sentence-transformers
+spacy
+pdfminer.six
+python-docx
+rapidfuzz
+unidecode
+numpy
+scikit-learn
