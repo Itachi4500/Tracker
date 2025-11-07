@@ -5,13 +5,9 @@ from typing import Any
 def _ensure_spacy_model():
     import spacy
     try:
-        return spacy.load("en_core_web_sm")
+        return spacy.load("en_core_web_sm")  # Full model with parser
     except OSError:
-        nlp = spacy.blank("en")
-        # Only add components if available
-        if "tagger" not in nlp.pipe_names:
-            nlp.add_pipe("tagger", config={"model": None}, last=True)
-        return nlp
+        return spacy.blank("en")
         
 @lru_cache(maxsize=1)
 def get_spacy_nlp() -> Any:
