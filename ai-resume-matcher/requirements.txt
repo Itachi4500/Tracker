@@ -1,4 +1,4 @@
-Flask
+streamlit
 gunicorn
 sentence-transformers
 torch
