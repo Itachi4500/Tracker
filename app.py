@@ -13,7 +13,11 @@ from unidecode import unidecode
 
 import spacy
 nlp = spacy.load("en_core_web_sm")
-
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+    nlp = spacy.load("en_core_web_sm")
 # ---------------------------
 # Small skills ontology (extend as you like)
 # ---------------------------
