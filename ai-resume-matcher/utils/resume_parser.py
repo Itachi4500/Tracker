@@ -113,9 +113,9 @@ def extract_contact_info(text: str) -> Dict[str, str]:
 def extract_skills_from_text(text: str, nlp=None, min_len: int = 3):
     """
     Extract skills from resume text using:
-      - spaCy noun chunks (if parser exists)
-      - Entities
-      - Comma/line-separated words
+    - spaCy noun chunks (if parser is available)
+    - Named entities
+    - Manually split words (comma/newline separated)
     """
     if nlp is None:
         from utils.model_loader import get_spacy_nlp
@@ -124,22 +124,23 @@ def extract_skills_from_text(text: str, nlp=None, min_len: int = 3):
     doc = nlp(text)
     skills = set()
 
-    # ✅ Safe noun_chunk extraction (won't crash if parser missing)
+    # ✅ 1. Safely extract noun chunks (avoid crash if no parser present)
     try:
         for chunk in doc.noun_chunks:
             s = chunk.text.strip().lower()
             if len(s) >= min_len and s.isascii():
                 skills.add(s)
     except Exception:
-        pass  # Skip noun_chunks if not available
+        # No parser available — skip noun chunk extraction
+        pass
 
-    # ✅ Named entities (ORG, PRODUCT, etc.)
+    # ✅ 2. Extract named entities (like ORG, PRODUCT, etc.)
     for ent in doc.ents:
         s = ent.text.strip().lower()
         if len(s) >= min_len and s.isascii():
             skills.add(s)
 
-    # ✅ Split comma/line/list-style text for skills
+    # ✅ 3. Extract comma/line-separated possible skills
     for raw in re.split(r"[\n,;•|/]+", text):
         s = raw.strip().lower()
         if len(s) >= min_len and s.isascii():
